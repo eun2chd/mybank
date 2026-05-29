@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import {
   HiArrowDown,
@@ -41,7 +41,11 @@ type DashboardData = {
   investmentProfitRate: number;
   investmentProfitAmount: number;
   accounts: Array<{ id: number; bankName: string; accountName: string; accountNumber: string; balance: number }>;
-  holdings: Array<{ id: number; name: string; symbol: string; value: number; returnRate: number }>;
+  holdings: Array<{
+    id: number; name: string; symbol: string; market: string;
+    buyAmount: number; totalQuantity: number; averagePrice: number;
+    currentPrice: number; value: number; returnRate: number;
+  }>;
   categories: Array<{ name: string; amount: number; color: string }>;
   incomeBreakdown: Array<{ name: string; amount: number }>;
   monthlyTrend: Array<{ label: string; value: number; display: string }>;
@@ -63,8 +67,31 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [holdings, setHoldings] = useState<DashboardData["holdings"]>([]);
+  const priceTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const canGoNext = !isCurrentMonth(viewYear, viewMonth);
+
+  const refreshHoldingPrices = useCallback(async () => {
+    try {
+      const result = await apiFetch<{ updated: number; prices: Array<{ id: number; currentPrice: number }> }>(
+        "/api/investments/refresh-prices", user, { method: "POST" }
+      );
+      if (result.updated > 0) {
+        setHoldings((prev) =>
+          prev.map((h) => {
+            const found = result.prices.find((p) => p.id === h.id);
+            if (!found) return h;
+            const value = h.totalQuantity * found.currentPrice;
+            const returnRate = h.buyAmount > 0 ? ((value - h.buyAmount) / h.buyAmount) * 100 : 0;
+            return { ...h, currentPrice: found.currentPrice, value, returnRate };
+          })
+        );
+      }
+    } catch {
+      // 가격 갱신 실패 무시
+    }
+  }, [user]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 1000);
@@ -75,10 +102,16 @@ export function Dashboard() {
     setLoading(true);
     setMessage("");
     apiFetch<DashboardData>(`/api/dashboard?year=${viewYear}&month=${viewMonth}`, user)
-      .then(setData)
+      .then((d) => { setData(d); setHoldings(d.holdings); })
+      .then(() => refreshHoldingPrices())
       .catch((error) => setMessage(error instanceof Error ? error.message : "데이터를 불러오지 못했습니다."))
       .finally(() => setLoading(false));
   }, [user.id, viewYear, viewMonth]);
+
+  useEffect(() => {
+    priceTimer.current = setInterval(() => refreshHoldingPrices(), 5 * 60 * 1000);
+    return () => { if (priceTimer.current) clearInterval(priceTimer.current); };
+  }, [refreshHoldingPrices]);
 
   const periodLabel = useMemo(
     () => monthPeriodLabel(viewYear, viewMonth, isCurrentMonth(viewYear, viewMonth)),
@@ -192,7 +225,7 @@ export function Dashboard() {
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <BankListCard accounts={data.accounts} cashTotal={data.cashBalance} />
-          <StockCard holdings={data.holdings} stockValue={data.stockValue} />
+          <StockCard holdings={holdings} stockValue={holdings.reduce((s, h) => s + h.value, 0)} />
         </div>
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -469,13 +502,12 @@ function BankListCard({ accounts, cashTotal }: { accounts: DashboardData["accoun
 
 function StockCard({ holdings, stockValue }: { holdings: DashboardData["holdings"]; stockValue: number }) {
   const donutData = holdings.map((h) => ({ label: h.name, value: h.value }));
-  const total = holdings.reduce((s, h) => s + h.value, 0) || 1;
 
   return (
     <Card className="flex min-h-[280px] w-full min-w-0 flex-col py-5">
       <CardContent className="flex flex-col px-5">
         <div className="mb-4">
-          <SectionHead title="보유 주식" sub={`평가액 ${wonShort(stockValue)}`} />
+          <SectionHead title="보유 주식" sub={`평가액 ${won(stockValue)}`} />
         </div>
         {holdings.length === 0 ? (
           <p className="text-sm text-muted-foreground">
@@ -487,20 +519,26 @@ function StockCard({ holdings, stockValue }: { holdings: DashboardData["holdings
         ) : (
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-center py-2">
-              <DonutChart data={donutData} palette={CHART_PALETTE} centerLabel="총 평가액" centerValue={wonShort(stockValue)} />
+              <DonutChart data={donutData} palette={CHART_PALETTE} centerLabel="총 평가액" centerValue={won(stockValue)} />
             </div>
-            <div className="flex flex-col gap-2.5">
+            <div className="flex flex-col gap-1">
               {holdings.map((s, i) => (
-                <div key={s.id} className="flex items-center gap-2.5 text-sm">
-                  <span className="size-2 shrink-0 rounded-sm" style={{ background: CHART_PALETTE[i % CHART_PALETTE.length] }} />
-                  <span className="flex-1 font-semibold">
-                    {s.name} {s.symbol ? <em className="font-medium text-muted-foreground not-italic">{s.symbol}</em> : null}
-                  </span>
-                  <span className={cn("tnum w-[52px] text-right text-[13px] font-bold", s.returnRate >= 0 ? "text-success" : "text-destructive")}>
-                    {s.returnRate >= 0 ? "+" : ""}
-                    {s.returnRate.toFixed(1)}%
-                  </span>
-                  <span className="tnum w-[46px] text-right font-bold">{Math.round((s.value / total) * 100)}%</span>
+                <div key={s.id} className="rounded-lg px-3 py-2.5 hover:bg-white/5">
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className="size-2 shrink-0 rounded-sm" style={{ background: CHART_PALETTE[i % CHART_PALETTE.length] }} />
+                    <span className="flex-1 text-sm font-semibold">
+                      {s.name}
+                      {s.symbol ? <em className="ml-1.5 text-xs font-normal text-muted-foreground not-italic">{s.symbol}</em> : null}
+                    </span>
+                    <span className={cn("tnum text-sm font-bold", s.returnRate >= 0 ? "text-success" : "text-destructive")}>
+                      {s.returnRate >= 0 ? "+" : ""}{s.returnRate.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 pl-4 text-xs text-muted-foreground">
+                    <span>현재가 <strong className="text-foreground">{won(s.currentPrice)}</strong></span>
+                    <span>보유가 <strong className="text-foreground">{won(s.averagePrice)}</strong></span>
+                    <span>평가액 <strong className="text-foreground">{won(s.value)}</strong></span>
+                  </div>
                 </div>
               ))}
             </div>

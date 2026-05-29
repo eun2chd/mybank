@@ -3,6 +3,14 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+@layer utilities {
+  .scrollbar-hide {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    &::-webkit-scrollbar { display: none; }
+  }
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

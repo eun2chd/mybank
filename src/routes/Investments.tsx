@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useOutletContext } from "react-router-dom";
 import type { AppContext } from "@/components/layout/AppShell";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -100,14 +100,53 @@ export function Investments() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function load() {
     const rows = await apiFetch<InvestmentItem[]>("/api/investments", user);
     setItems(rows);
   }
 
+  const refreshPrices = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const result = await apiFetch<{ updated: number; prices: Array<{ id: number; currentPrice: number }> }>(
+        "/api/investments/refresh-prices", user, { method: "POST" }
+      );
+      if (result.updated > 0) {
+        setItems((prev) =>
+          prev.map((item) => {
+            const found = result.prices.find((p) => p.id === item.id);
+            if (!found) return item;
+            const value = item.totalQuantity * found.currentPrice;
+            const profitAmount = value - item.totalBuyAmount;
+            const returnRate = item.totalBuyAmount > 0 ? (profitAmount / item.totalBuyAmount) * 100 : 0;
+            return { ...item, currentPrice: found.currentPrice, value, returnRate, profitAmount };
+          })
+        );
+      }
+      setLastUpdated(new Date());
+    } catch {
+      // 가격 갱신 실패는 조용히 무시
+    } finally {
+      setRefreshing(false);
+    }
+  }, [user]);
+
   useEffect(() => {
-    load().catch((error) => setMessage(error instanceof Error ? error.message : "불러오지 못했습니다."));
+    load()
+      .then(() => refreshPrices())
+      .catch((error) => setMessage(error instanceof Error ? error.message : "불러오지 못했습니다."));
+
+    refreshTimer.current = setInterval(() => {
+      refreshPrices();
+    }, 5 * 60 * 1000);
+
+    return () => {
+      if (refreshTimer.current) clearInterval(refreshTimer.current);
+    };
   }, [user.id]);
 
   function startCreate() {
@@ -316,7 +355,20 @@ export function Investments() {
 
         <Card className="flex h-full min-h-0 w-full min-w-0 flex-col gap-0 py-0">
           <CardHeader className="shrink-0 border-b border-border/60 px-5 py-4">
-            <CardTitle className="text-base">보유 종목 목록</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">보유 종목 목록</CardTitle>
+              <button
+                type="button"
+                onClick={refreshPrices}
+                disabled={refreshing}
+                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+                {lastUpdated
+                  ? `${lastUpdated.getHours().toString().padStart(2, "0")}:${lastUpdated.getMinutes().toString().padStart(2, "0")} 갱신`
+                  : "현재가 갱신"}
+              </button>
+            </div>
             <p className="mt-1 text-sm text-muted-foreground">
               {items.length}종목 · 평가 {won(totalValue)}
               {items.length > 0 ? (

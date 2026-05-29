@@ -53,12 +53,13 @@ export function AppShell({ user, onLogout }: Props) {
 
         <div className="mx-1.5 my-5 h-px bg-border" />
 
-        <p className="px-3.5 pb-2.5 text-[11px] font-bold tracking-widest text-muted-foreground/80">메뉴</p>
-        <nav className="flex flex-col gap-1">
+        <nav className="flex flex-col gap-1 overflow-y-auto scrollbar-hide">
           <NavLink to="/" end className={navLinkClass}>
             <ChartPie size={20} />
             대시보드
           </NavLink>
+
+          <p className="px-3.5 pb-1 pt-4 text-[10px] font-bold tracking-widest text-muted-foreground/60">소비</p>
           <NavLink to="/entry" className={navLinkClass}>
             <PlusCircle size={20} />
             소비기록 입력
@@ -75,6 +76,8 @@ export function AppShell({ user, onLogout }: Props) {
             <Tags size={20} />
             카테고리별 조회
           </NavLink>
+
+          <p className="px-3.5 pb-1 pt-4 text-[10px] font-bold tracking-widest text-muted-foreground/60">자산</p>
           <NavLink to="/cards" className={navLinkClass}>
             <CreditCard size={20} />
             카드 관리
@@ -87,10 +90,6 @@ export function AppShell({ user, onLogout }: Props) {
             <Landmark size={20} />
             계좌 관리
           </NavLink>
-          <NavLink to="/categories" className={navLinkClass}>
-            <Tags size={20} />
-            카테고리 관리
-          </NavLink>
           <NavLink to="/other-assets" className={navLinkClass}>
             <Landmark size={20} />
             기타 자산 관리
@@ -98,6 +97,12 @@ export function AppShell({ user, onLogout }: Props) {
           <NavLink to="/investments" className={navLinkClass}>
             <TrendingUp size={20} />
             주식 자산 관리
+          </NavLink>
+
+          <p className="px-3.5 pb-1 pt-4 text-[10px] font-bold tracking-widest text-muted-foreground/60">관리</p>
+          <NavLink to="/categories" className={navLinkClass}>
+            <Tags size={20} />
+            카테고리 관리
           </NavLink>
           <NavLink to="/subscriptions" className={navLinkClass}>
             <Repeat2 size={20} />

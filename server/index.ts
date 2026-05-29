@@ -1,16 +1,32 @@
 import "dotenv/config";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import cors from "cors";
 import express from "express";
 import { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { createPool, hasDatabaseConfig } from "./db.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const app = express();
 const pool = createPool();
 const port = Number(process.env.PORT ?? 4000);
 
-app.use(cors({ origin: ["http://127.0.0.1:5173", "http://localhost:5173"] }));
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    const allowed = /^http:\/\/(127\.0\.0\.1|localhost|192\.168\.\d+\.\d+)(:\d+)?$/;
+    cb(null, allowed.test(origin));
+  }
+}));
 app.use(express.json({ limit: "2mb" }));
+const distPath = path.join(__dirname, "../dist");
+const hasDist = fs.existsSync(path.join(distPath, "index.html"));
+if (hasDist) {
+  app.use(express.static(distPath));
+}
 
 type UserRow = RowDataPacket & {
   id: number;
@@ -744,7 +760,11 @@ app.get("/api/dashboard", async (req, res) => {
   );
 
   const [holdingRows] = await db.execute<RowDataPacket[]>(
-    `SELECT id, name, symbol, total_buy_amount AS buyAmount,
+    `SELECT id, name, symbol, market,
+            total_buy_amount AS buyAmount,
+            total_quantity AS totalQuantity,
+            average_price AS averagePrice,
+            current_price AS currentPrice,
             total_quantity * current_price AS value,
             CASE
               WHEN total_buy_amount > 0
@@ -865,6 +885,11 @@ app.get("/api/dashboard", async (req, res) => {
       id: row.id,
       name: row.name,
       symbol: row.symbol ?? "",
+      market: row.market ?? "",
+      buyAmount: toNumber(row.buyAmount),
+      totalQuantity: toNumber(row.totalQuantity),
+      averagePrice: toNumber(row.averagePrice),
+      currentPrice: toNumber(row.currentPrice),
       value: toNumber(row.value),
       returnRate: toNumber(row.returnRate)
     })),
@@ -2362,6 +2387,40 @@ app.delete("/api/investments/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/investments/refresh-prices", async (req, res) => {
+  const db = requirePool();
+  const userId = userIdFromRequest(req);
+
+  const [rows] = await db.execute<RowDataPacket[]>(
+    `SELECT id, symbol, market FROM investments
+     WHERE user_id = :userId AND is_active = TRUE
+       AND symbol IS NOT NULL AND symbol != ''
+       AND market IS NOT NULL AND market != ''`,
+    { userId }
+  );
+
+  const updated: Array<{ id: number; currentPrice: number }> = [];
+
+  console.log(`[가격갱신] ${rows.length}개 종목 조회 시작`);
+
+  await Promise.all(
+    rows.map(async (row) => {
+      const price = await fetchCurrentPrice(String(row.symbol), String(row.market));
+      console.log(`[가격갱신] ${row.symbol}(${row.market}) → ${price ?? "실패"}`);
+      if (price !== null && price > 0) {
+        await db.execute(
+          `UPDATE investments SET current_price = :price WHERE id = :id AND user_id = :userId`,
+          { price, id: row.id, userId }
+        );
+        updated.push({ id: Number(row.id), currentPrice: price });
+      }
+    })
+  );
+
+  console.log(`[가격갱신] 완료: ${updated.length}/${rows.length}개 업데이트`);
+  res.json({ updated: updated.length, prices: updated });
+});
+
 type TransactionPayload = {
   transactionDate: string;
   transactionType: string;
@@ -3002,12 +3061,78 @@ app.delete("/api/transactions/:id", async (req, res) => {
   }
 });
 
+function toYahooSymbol(symbol: string, market: string): string | null {
+  const suffixes: Record<string, string> = {
+    KOSPI: ".KS", KOSDAQ: ".KQ", TSE: ".T", HKEX: ".HK", LSE: ".L"
+  };
+  if (suffixes[market]) return symbol + suffixes[market];
+  if (["NYSE", "NASDAQ", "AMEX"].includes(market)) return symbol;
+  return null;
+}
+
+async function fetchCurrentPrice(symbol: string, market: string): Promise<number | null> {
+  try {
+    if (market === "UPBIT") {
+      const r = await fetch(`https://api.upbit.com/v1/ticker?markets=KRW-${symbol}`);
+      if (!r.ok) return null;
+      const d = await r.json() as Array<{ trade_price: number }>;
+      return d[0]?.trade_price ?? null;
+    }
+    if (market === "BITHUMB") {
+      const r = await fetch(`https://api.bithumb.com/public/ticker/${symbol}_KRW`);
+      if (!r.ok) return null;
+      const d = await r.json() as { data?: { closing_price?: string } };
+      return d.data?.closing_price ? Number(d.data.closing_price) : null;
+    }
+    if (market === "BINANCE") {
+      const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`);
+      if (!r.ok) return null;
+      const d = await r.json() as { price?: string };
+      return d.price ? Number(d.price) : null;
+    }
+    const yahooSym = toYahooSymbol(symbol, market);
+    if (!yahooSym) return null;
+    const r = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    if (!r.ok) return null;
+    const d = await r.json() as {
+      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number } }> };
+    };
+    return d.chart?.result?.[0]?.meta?.regularMarketPrice ?? null;
+  } catch {
+    return null;
+  }
+}
+
+if (hasDist) {
+  app.get(/.*/, (_req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+}
+
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const statusCode =
     typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
   res.status(statusCode).json({ message: error instanceof Error ? error.message : "Server error" });
 });
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`API server running on http://127.0.0.1:${port}`);
+app.listen(port, "0.0.0.0", async () => {
+  console.log(`API server running on http://0.0.0.0:${port}`);
+
+  if (!hasDatabaseConfig()) {
+    console.warn("[DB] 환경변수 미설정 — DB 연결 없이 실행 중");
+    return;
+  }
+
+  console.log(`[DB] 연결 시도: ${process.env.DB_HOST}:${process.env.DB_PORT} / ${process.env.DB_NAME}`);
+  try {
+    const conn = await pool!.getConnection();
+    await conn.ping();
+    conn.release();
+    console.log("[DB] 연결 성공");
+  } catch (err) {
+    console.error("[DB] 연결 실패:", err instanceof Error ? err.message : err);
+  }
 });

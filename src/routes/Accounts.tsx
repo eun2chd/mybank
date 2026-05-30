@@ -19,6 +19,8 @@ import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/auth";
 import { formatAmountInput, parseAmountInput, won } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type AccountType = "checking" | "savings" | "investment" | "cash";
 
@@ -81,6 +83,7 @@ export function Accounts() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const { page: acctPage, setPage: setAcctPage, pageItems: acctPageItems } = usePagination(accounts);
 
   async function load() {
     const rows = await apiFetch<AccountItem[]>("/api/accounts", user);
@@ -273,6 +276,7 @@ export function Accounts() {
                 등록된 계좌가 없습니다. 왼쪽에서 추가해 보세요.
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -286,7 +290,7 @@ export function Accounts() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {accounts.map((item) => (
+                  {acctPageItems.map((item) => (
                     <DataTableRow
                       key={item.id}
                       className={cn(editingId === item.id && "bg-primary/10 hover:bg-primary/10")}
@@ -330,6 +334,8 @@ export function Accounts() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={accounts.length} page={acctPage} onChange={setAcctPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

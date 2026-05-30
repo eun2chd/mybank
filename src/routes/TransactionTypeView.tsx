@@ -17,6 +17,8 @@ import {
 import { apiFetch } from "@/auth";
 import { formatMonthLabel, isCurrentMonth, shiftMonth, won } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type TypeKind = "expense" | "income" | "neutral";
 
@@ -78,6 +80,7 @@ export function TransactionTypeView() {
   const [loadingSummary, setLoadingSummary] = useState(true);
   const [loadingTx, setLoadingTx] = useState(false);
   const [message, setMessage] = useState("");
+  const { page: typeViewPage, setPage: setTypeViewPage, pageItems: typeViewPageItems } = usePagination(transactions);
 
   const canGoNext = !isCurrentMonth(viewYear, viewMonth);
   const periodLabel = formatMonthLabel(viewYear, viewMonth);
@@ -322,6 +325,7 @@ export function TransactionTypeView() {
                 </Link>
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -333,7 +337,7 @@ export function TransactionTypeView() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {transactions.map((tx) => (
+                  {typeViewPageItems.map((tx) => (
                     <DataTableRow key={tx.id}>
                       <DataTableCell className="tnum text-muted-foreground">
                         {tx.transactionDate.replace(/-/g, ".")}
@@ -353,6 +357,8 @@ export function TransactionTypeView() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={transactions.length} page={typeViewPage} onChange={setTypeViewPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

@@ -23,7 +23,7 @@ function DataTable({ className, wrapperClassName, ...props }: React.ComponentPro
 }
 
 function DataTableHeader({ className, ...props }: React.ComponentProps<"thead">) {
-  return <thead data-slot="data-table-header" className={cn("bg-secondary text-foreground", className)} {...props} />;
+  return <thead data-slot="data-table-header" className={cn("sticky top-0 z-10 bg-secondary text-foreground", className)} {...props} />;
 }
 
 function DataTableBody({ className, ...props }: React.ComponentProps<"tbody">) {

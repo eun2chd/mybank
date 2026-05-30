@@ -19,6 +19,8 @@ import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/auth";
 import { won } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type AssetType = "stock" | "coin" | "fund" | "etc";
 
@@ -28,6 +30,8 @@ type InvestmentItem = {
   assetType: AssetType;
   market: string | null;
   symbol: string | null;
+  currency: string;
+  originalPrice: number | null;
   totalBuyAmount: number;
   totalQuantity: number;
   averagePrice: number;
@@ -79,6 +83,28 @@ const MARKET_OPTIONS = [
   { value: "ETC", label: "기타" }
 ] as const;
 
+function marketCurrency(market: string): string {
+  if (["NYSE", "NASDAQ", "AMEX", "BINANCE"].includes(market)) return "USD";
+  if (market === "TSE") return "JPY";
+  if (market === "HKEX") return "HKD";
+  if (market === "LSE") return "GBP";
+  return "KRW";
+}
+
+function currencySymbol(currency: string): string {
+  if (currency === "USD") return "$";
+  if (currency === "JPY") return "¥";
+  if (currency === "HKD") return "HK$";
+  if (currency === "GBP") return "£";
+  return "₩";
+}
+
+function formatOriginalPrice(originalPrice: number, currency: string): string {
+  const sym = currencySymbol(currency);
+  if (currency === "JPY") return `${sym}${originalPrice.toLocaleString("ko-KR", { maximumFractionDigits: 0 })}`;
+  return `${sym}${originalPrice.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 const emptyForm = (): FormState => ({
   name: "",
   symbol: "",
@@ -103,6 +129,7 @@ export function Investments() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { page: invPage, setPage: setInvPage, pageItems: invPageItems } = usePagination(items);
 
   async function load() {
     const rows = await apiFetch<InvestmentItem[]>("/api/investments", user);
@@ -112,9 +139,10 @@ export function Investments() {
   const refreshPrices = useCallback(async () => {
     setRefreshing(true);
     try {
-      const result = await apiFetch<{ updated: number; prices: Array<{ id: number; currentPrice: number }> }>(
-        "/api/investments/refresh-prices", user, { method: "POST" }
-      );
+      const result = await apiFetch<{
+        updated: number;
+        prices: Array<{ id: number; currentPrice: number; originalPrice: number | null; currency: string }>;
+      }>("/api/investments/refresh-prices", user, { method: "POST" });
       if (result.updated > 0) {
         setItems((prev) =>
           prev.map((item) => {
@@ -123,7 +151,15 @@ export function Investments() {
             const value = item.totalQuantity * found.currentPrice;
             const profitAmount = value - item.totalBuyAmount;
             const returnRate = item.totalBuyAmount > 0 ? (profitAmount / item.totalBuyAmount) * 100 : 0;
-            return { ...item, currentPrice: found.currentPrice, value, returnRate, profitAmount };
+            return {
+              ...item,
+              currentPrice: found.currentPrice,
+              originalPrice: found.originalPrice ?? item.originalPrice,
+              currency: found.currency ?? item.currency,
+              value,
+              returnRate,
+              profitAmount
+            };
           })
         );
       }
@@ -164,7 +200,12 @@ export function Investments() {
       assetType: item.assetType,
       totalBuyAmount: String(item.totalBuyAmount),
       totalQuantity: String(item.totalQuantity),
-      currentPrice: String(item.currentPrice),
+      // 외화 종목은 원화 환산 전 원가를 보여줌 (서버에서 재환산)
+      currentPrice: String(
+        item.currency !== "KRW" && item.originalPrice != null
+          ? item.originalPrice
+          : item.currentPrice
+      ),
       memo: item.memo ?? ""
     });
     setMessage("");
@@ -321,13 +362,23 @@ export function Investments() {
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="currentPrice">현재가</Label>
+                <Label htmlFor="currentPrice">
+                  현재가
+                  {form.market && marketCurrency(form.market) !== "KRW" ? (
+                    <span className="ml-1.5 text-xs font-normal text-accent">
+                      ({marketCurrency(form.market)} 입력 → 원화 자동 환산)
+                    </span>
+                  ) : null}
+                </Label>
                 <Input
                   id="currentPrice"
                   type="number"
+                  step="0.0001"
                   value={form.currentPrice}
                   onChange={(e) => updateField("currentPrice", e.target.value)}
-                  placeholder="0"
+                  placeholder={form.market && marketCurrency(form.market) !== "KRW"
+                    ? `${marketCurrency(form.market)} 가격 입력`
+                    : "0"}
                 />
               </div>
               <div className="grid gap-2">
@@ -386,6 +437,7 @@ export function Investments() {
                 등록된 종목이 없습니다. 왼쪽에서 추가해 보세요.
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -398,7 +450,7 @@ export function Investments() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {items.map((item) => (
+                  {invPageItems.map((item) => (
                     <DataTableRow
                       key={item.id}
                       className={cn(editingId === item.id && "bg-primary/10 hover:bg-primary/10")}
@@ -423,7 +475,18 @@ export function Investments() {
                         {item.returnRate >= 0 ? "+" : ""}
                         {item.returnRate.toFixed(1)}%
                       </DataTableCell>
-                      <DataTableCell className="tnum">{won(item.currentPrice)}</DataTableCell>
+                      <DataTableCell className="tnum">
+                        {item.currency !== "KRW" && item.originalPrice != null ? (
+                          <div>
+                            <div className="text-xs text-muted-foreground">
+                              {formatOriginalPrice(item.originalPrice, item.currency)}
+                            </div>
+                            <div>{won(item.currentPrice)}</div>
+                          </div>
+                        ) : (
+                          won(item.currentPrice)
+                        )}
+                      </DataTableCell>
                       <DataTableCell>
                         <div className="flex items-center justify-center gap-1">
                           <Button
@@ -451,6 +514,8 @@ export function Investments() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={items.length} page={invPage} onChange={setInvPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

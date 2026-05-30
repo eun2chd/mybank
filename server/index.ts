@@ -22,6 +22,10 @@ app.use(cors({
   }
 }));
 app.use(express.json({ limit: "2mb" }));
+app.use((req, _res, next) => {
+  console.log(`[REQ] ${req.method} ${req.path} uid=${req.header("x-user-id") ?? "-"}`);
+  next();
+});
 const distPath = path.join(__dirname, "../dist");
 const hasDist = fs.existsSync(path.join(distPath, "index.html"));
 if (hasDist) {
@@ -272,16 +276,23 @@ function mapOtherAssetRow(row: RowDataPacket) {
 }
 
 function mapCardRow(row: RowDataPacket) {
+  const cardType = row.cardType ?? row.card_type;
+  // 체크카드는 연결 계좌 잔액, 신용카드는 카드 자체 잔액
+  const balance =
+    cardType === "debit" && row.accountBalance != null
+      ? toNumber(row.accountBalance)
+      : toNumber(row.cardBalance ?? row.balance);
+
   return {
     id: row.id,
     cardCompany: row.cardCompany,
     cardName: row.cardName,
-    cardType: row.cardType,
+    cardType,
     accountId: row.accountId ?? row.account_id ?? null,
     accountLabel: row.accountLabel ?? null,
     accountNumber: row.accountNumber ?? null,
     cardNumber: row.cardNumber ?? null,
-    balance: toNumber(row.balance),
+    balance,
     isShared: Boolean(row.isShared ?? row.is_shared ?? false),
     memo: row.memo ?? "",
     createdAt: row.createdAt,
@@ -761,6 +772,7 @@ app.get("/api/dashboard", async (req, res) => {
 
   const [holdingRows] = await db.execute<RowDataPacket[]>(
     `SELECT id, name, symbol, market,
+            currency, original_price AS originalPrice,
             total_buy_amount AS buyAmount,
             total_quantity AS totalQuantity,
             average_price AS averagePrice,
@@ -811,10 +823,11 @@ app.get("/api/dashboard", async (req, res) => {
   const investment = investmentRows[0] ?? {};
   const buyAmount = toNumber(investment.buyAmount);
   const currentValue = toNumber(investment.currentValue);
+  // 신용카드 잔액만 합산 (체크카드 잔액은 연결 계좌로 cashBalance에 이미 포함됨)
   const [cardBalanceRows] = await db.execute<RowDataPacket[]>(
     `SELECT COALESCE(SUM(balance), 0) AS total
      FROM cards
-     WHERE user_id = :userId AND is_active = TRUE`,
+     WHERE user_id = :userId AND is_active = TRUE AND card_type = 'credit'`,
     { userId }
   );
 
@@ -886,6 +899,8 @@ app.get("/api/dashboard", async (req, res) => {
       name: row.name,
       symbol: row.symbol ?? "",
       market: row.market ?? "",
+      currency: String(row.currency ?? "KRW"),
+      originalPrice: row.originalPrice != null ? toNumber(row.originalPrice) : null,
       buyAmount: toNumber(row.buyAmount),
       totalQuantity: toNumber(row.totalQuantity),
       averagePrice: toNumber(row.averagePrice),
@@ -1045,11 +1060,14 @@ app.get("/api/cards", async (req, res) => {
   const [rows] = await db.execute<RowDataPacket[]>(
     `SELECT c.id, c.card_company AS cardCompany, c.card_name AS cardName,
             c.card_type AS cardType, c.account_id AS accountId, c.account_number AS accountNumber,
-            c.card_number AS cardNumber, c.balance, c.is_shared AS isShared, c.memo,
+            c.card_number AS cardNumber,
+            c.balance AS cardBalance,
+            a.balance AS accountBalance,
+            c.is_shared AS isShared, c.memo,
             c.created_at AS createdAt, c.updated_at AS updatedAt,
             CONCAT(a.bank_name, ' ', a.account_name) AS accountLabel
      FROM cards c
-     LEFT JOIN accounts a ON a.id = c.account_id AND a.user_id = c.user_id
+     LEFT JOIN accounts a ON a.id = c.account_id AND a.user_id = c.user_id AND a.is_active = TRUE
      WHERE c.user_id = :userId
      ORDER BY c.id DESC`,
     { userId }
@@ -2192,15 +2210,50 @@ app.delete("/api/subscriptions/:id", async (req, res) => {
 const INVESTMENT_ASSET_TYPES = ["stock", "coin", "fund", "etc"] as const;
 type InvestmentAssetType = (typeof INVESTMENT_ASSET_TYPES)[number];
 
+// 시장별 통화 결정
+function marketCurrency(market: string | null): string {
+  if (!market) return "KRW";
+  if (["NYSE", "NASDAQ", "AMEX", "BINANCE"].includes(market)) return "USD";
+  if (market === "TSE") return "JPY";
+  if (market === "HKEX") return "HKD";
+  if (market === "LSE") return "GBP";
+  return "KRW"; // KOSPI, KOSDAQ, UPBIT, BITHUMB
+}
+
+// 환율 캐시 (10분)
+const rateCache = new Map<string, { rate: number; fetchedAt: number }>();
+
+async function fetchKrwRate(currency: string): Promise<number> {
+  if (currency === "KRW") return 1;
+  const cached = rateCache.get(currency);
+  if (cached && Date.now() - cached.fetchedAt < 10 * 60 * 1000) return cached.rate;
+  try {
+    const r = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${currency}KRW=X`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
+    );
+    if (!r.ok) return 0;
+    const d = await r.json() as {
+      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number } }> };
+    };
+    const rate = d.chart?.result?.[0]?.meta?.regularMarketPrice ?? 0;
+    if (rate > 0) rateCache.set(currency, { rate, fetchedAt: Date.now() });
+    return rate;
+  } catch {
+    return 0;
+  }
+}
+
 type InvestmentPayload = {
   name: string;
   assetType: InvestmentAssetType;
   market: string | null;
   symbol: string | null;
+  currency: string;
   totalBuyAmount: number;
   totalQuantity: number;
   averagePrice: number;
-  currentPrice: number;
+  inputPrice: number;   // 사용자 입력 가격 (시장 통화 기준)
   memo: string | null;
 };
 
@@ -2212,15 +2265,16 @@ function parseInvestmentPayload(body: Record<string, unknown>): InvestmentPayloa
     : "stock") as InvestmentAssetType;
   const market = body.market ? String(body.market).trim() : null;
   const symbol = body.symbol ? String(body.symbol).trim() : null;
+  const currency = marketCurrency(market);
   const totalBuyAmount = toNumber(body.totalBuyAmount ?? body.total_buy_amount);
   const totalQuantity = toNumber(body.totalQuantity ?? body.total_quantity);
-  const currentPrice = toNumber(body.currentPrice ?? body.current_price);
+  const inputPrice = toNumber(body.currentPrice ?? body.current_price);
   const memo = body.memo ? String(body.memo).trim() : null;
 
   if (!name) {
     return { error: "종목명은 필수입니다." };
   }
-  if (!Number.isFinite(totalBuyAmount) || !Number.isFinite(totalQuantity) || !Number.isFinite(currentPrice)) {
+  if (!Number.isFinite(totalBuyAmount) || !Number.isFinite(totalQuantity) || !Number.isFinite(inputPrice)) {
     return { error: "금액·수량·현재가가 올바르지 않습니다." };
   }
 
@@ -2234,10 +2288,11 @@ function parseInvestmentPayload(body: Record<string, unknown>): InvestmentPayloa
     assetType,
     market,
     symbol,
+    currency,
     totalBuyAmount,
     totalQuantity,
     averagePrice,
-    currentPrice,
+    inputPrice,
     memo
   };
 }
@@ -2245,7 +2300,9 @@ function parseInvestmentPayload(body: Record<string, unknown>): InvestmentPayloa
 function mapInvestmentRow(row: RowDataPacket) {
   const totalBuyAmount = toNumber(row.totalBuyAmount ?? row.total_buy_amount);
   const totalQuantity = toNumber(row.totalQuantity ?? row.total_quantity);
-  const currentPrice = toNumber(row.currentPrice ?? row.current_price);
+  const currentPrice = toNumber(row.currentPrice ?? row.current_price); // 항상 KRW
+  const currency = String(row.currency ?? "KRW");
+  const originalPrice = row.originalPrice != null ? toNumber(row.originalPrice) : null;
   const value = totalQuantity * currentPrice;
   const profitAmount = value - totalBuyAmount;
   const returnRate = totalBuyAmount > 0 ? (profitAmount / totalBuyAmount) * 100 : 0;
@@ -2256,6 +2313,8 @@ function mapInvestmentRow(row: RowDataPacket) {
     assetType: row.assetType ?? row.asset_type,
     market: row.market ?? null,
     symbol: row.symbol ?? null,
+    currency,
+    originalPrice,
     totalBuyAmount,
     totalQuantity,
     averagePrice: toNumber(row.averagePrice ?? row.average_price),
@@ -2275,6 +2334,7 @@ app.get("/api/investments", async (req, res) => {
   const userId = userIdFromRequest(req);
   const [rows] = await db.execute<RowDataPacket[]>(
     `SELECT id, asset_type AS assetType, market, symbol, name,
+            currency, original_price AS originalPrice,
             total_buy_amount AS totalBuyAmount, total_quantity AS totalQuantity,
             average_price AS averagePrice, current_price AS currentPrice,
             is_active AS isActive, memo, created_at AS createdAt, updated_at AS updatedAt
@@ -2295,21 +2355,30 @@ app.post("/api/investments", async (req, res) => {
     return;
   }
 
+  const { currency, inputPrice } = parsed;
+  const krwRate = await fetchKrwRate(currency);
+  const currentPrice = currency === "KRW" || krwRate <= 0 ? inputPrice : inputPrice * krwRate;
+  const originalPrice = currency !== "KRW" && inputPrice > 0 ? inputPrice : null;
+
   const [result] = await db.execute<ResultSetHeader>(
     `INSERT INTO investments
-       (user_id, asset_type, market, symbol, name, total_buy_amount, total_quantity, average_price, current_price, memo)
+       (user_id, asset_type, market, symbol, name, currency, original_price,
+        total_buy_amount, total_quantity, average_price, current_price, memo)
      VALUES
-       (:userId, :assetType, :market, :symbol, :name, :totalBuyAmount, :totalQuantity, :averagePrice, :currentPrice, :memo)`,
+       (:userId, :assetType, :market, :symbol, :name, :currency, :originalPrice,
+        :totalBuyAmount, :totalQuantity, :averagePrice, :currentPrice, :memo)`,
     {
       userId,
       assetType: parsed.assetType,
       market: parsed.market,
       symbol: parsed.symbol,
       name: parsed.name,
+      currency,
+      originalPrice,
       totalBuyAmount: parsed.totalBuyAmount,
       totalQuantity: parsed.totalQuantity,
       averagePrice: parsed.averagePrice,
-      currentPrice: parsed.currentPrice,
+      currentPrice,
       memo: parsed.memo
     }
   );
@@ -2331,12 +2400,19 @@ app.put("/api/investments/:id", async (req, res) => {
     return;
   }
 
+  const { currency, inputPrice } = parsed;
+  const krwRate = await fetchKrwRate(currency);
+  const currentPrice = currency === "KRW" || krwRate <= 0 ? inputPrice : inputPrice * krwRate;
+  const originalPrice = currency !== "KRW" && inputPrice > 0 ? inputPrice : null;
+
   const [result] = await db.execute<ResultSetHeader>(
     `UPDATE investments
      SET asset_type = :assetType,
          market = :market,
          symbol = :symbol,
          name = :name,
+         currency = :currency,
+         original_price = :originalPrice,
          total_buy_amount = :totalBuyAmount,
          total_quantity = :totalQuantity,
          average_price = :averagePrice,
@@ -2351,10 +2427,12 @@ app.put("/api/investments/:id", async (req, res) => {
       market: parsed.market,
       symbol: parsed.symbol,
       name: parsed.name,
+      currency,
+      originalPrice,
       totalBuyAmount: parsed.totalBuyAmount,
       totalQuantity: parsed.totalQuantity,
       averagePrice: parsed.averagePrice,
-      currentPrice: parsed.currentPrice,
+      currentPrice,
       memo: parsed.memo
     }
   );
@@ -2399,20 +2477,40 @@ app.post("/api/investments/refresh-prices", async (req, res) => {
     { userId }
   );
 
-  const updated: Array<{ id: number; currentPrice: number }> = [];
+  const updated: Array<{ id: number; currentPrice: number; originalPrice: number | null; currency: string }> = [];
 
   console.log(`[가격갱신] ${rows.length}개 종목 조회 시작`);
 
   await Promise.all(
     rows.map(async (row) => {
-      const price = await fetchCurrentPrice(String(row.symbol), String(row.market));
-      console.log(`[가격갱신] ${row.symbol}(${row.market}) → ${price ?? "실패"}`);
-      if (price !== null && price > 0) {
+      const market = String(row.market);
+      const symbol = String(row.symbol);
+      const currency = marketCurrency(market);
+      const originalPrice = await fetchCurrentPrice(symbol, market);
+      console.log(`[가격갱신] ${symbol}(${market}) → ${originalPrice ?? "실패"} ${currency}`);
+      if (originalPrice !== null && originalPrice > 0) {
+        let currentPrice: number;
+        if (currency === "KRW") {
+          currentPrice = originalPrice;
+        } else {
+          const krwRate = await fetchKrwRate(currency);
+          currentPrice = krwRate > 0 ? originalPrice * krwRate : 0;
+        }
+        if (currentPrice <= 0) return;
         await db.execute(
-          `UPDATE investments SET current_price = :price WHERE id = :id AND user_id = :userId`,
-          { price, id: row.id, userId }
+          `UPDATE investments
+           SET current_price = :currentPrice,
+               original_price = :originalPrice,
+               currency = :currency
+           WHERE id = :id AND user_id = :userId`,
+          { currentPrice, originalPrice: currency !== "KRW" ? originalPrice : null, currency, id: row.id, userId }
         );
-        updated.push({ id: Number(row.id), currentPrice: price });
+        updated.push({
+          id: Number(row.id),
+          currentPrice,
+          originalPrice: currency !== "KRW" ? originalPrice : null,
+          currency
+        });
       }
     })
   );
@@ -2539,25 +2637,52 @@ async function applyBalanceDelta(
   target: BalanceTarget,
   delta: number
 ) {
-  if (delta === 0) return;
+  console.log(`[BALANCE] target=${JSON.stringify(target)} delta=${delta} userId=${userId}`);
+  if (delta === 0) { console.log("[BALANCE] delta=0, skip"); return; }
 
   if (target.paymentMethod === "card") {
-    const [result] = await connection.execute<ResultSetHeader>(
-      `UPDATE cards SET balance = balance + :delta
-       WHERE id = :cardId AND user_id = :userId AND is_active = TRUE`,
-      { delta, cardId: target.cardId, userId }
+    const [cardRows] = await connection.execute<RowDataPacket[]>(
+      `SELECT account_id AS accountId FROM cards WHERE id = :cardId AND user_id = :userId`,
+      { cardId: target.cardId, userId }
     );
-    if (result.affectedRows === 0) {
+    console.log(`[BALANCE] card lookup cardId=${target.cardId}:`, JSON.stringify(cardRows[0]));
+    if (!cardRows[0]) {
       throw Object.assign(new Error("카드를 찾을 수 없습니다."), { statusCode: 400 });
+    }
+    const linkedAccountId: number | null = cardRows[0].accountId ?? null;
+
+    if (linkedAccountId) {
+      console.log(`[BALANCE] 체크카드 → 계좌 ${linkedAccountId} delta=${delta}`);
+      const [result] = await connection.execute<ResultSetHeader>(
+        `UPDATE accounts SET balance = balance + :delta
+         WHERE id = :linkedAccountId AND user_id = :userId AND is_active = TRUE`,
+        { delta, linkedAccountId, userId }
+      );
+      console.log(`[BALANCE] 계좌 업데이트 affected=${result.affectedRows}`);
+      if (result.affectedRows === 0) {
+        throw Object.assign(new Error("연결된 계좌를 찾을 수 없습니다."), { statusCode: 400 });
+      }
+    } else {
+      console.log(`[BALANCE] 신용카드 → 카드 ${target.cardId} delta=${delta}`);
+      const [result] = await connection.execute<ResultSetHeader>(
+        `UPDATE cards SET balance = balance + :delta
+         WHERE id = :cardId AND user_id = :userId AND is_active = TRUE`,
+        { delta, cardId: target.cardId, userId }
+      );
+      if (result.affectedRows === 0) {
+        throw Object.assign(new Error("카드를 찾을 수 없습니다."), { statusCode: 400 });
+      }
     }
     return;
   }
 
+  console.log(`[BALANCE] 계좌 직접 → accountId=${target.accountId} delta=${delta}`);
   const [result] = await connection.execute<ResultSetHeader>(
     `UPDATE accounts SET balance = balance + :delta
      WHERE id = :accountId AND user_id = :userId AND is_active = TRUE`,
     { delta, accountId: target.accountId, userId }
   );
+  console.log(`[BALANCE] 계좌 업데이트 affected=${result.affectedRows}`);
   if (result.affectedRows === 0) {
     throw Object.assign(new Error("계좌를 찾을 수 없습니다."), { statusCode: 400 });
   }

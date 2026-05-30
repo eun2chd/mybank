@@ -19,6 +19,8 @@ import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/auth";
 import { won } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type BillingCycle = "monthly" | "yearly" | "weekly" | "custom";
 type SubscriptionStatus = "active" | "paused" | "cancelled";
@@ -121,6 +123,7 @@ export function Subscriptions() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const { page: subPage, setPage: setSubPage, pageItems: subPageItems } = usePagination(items);
 
   async function load() {
     const [subRows, cardRows, categoryRows] = await Promise.all([
@@ -447,6 +450,7 @@ export function Subscriptions() {
                 등록된 구독이 없습니다. 왼쪽에서 추가해 보세요.
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -461,7 +465,7 @@ export function Subscriptions() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {items.map((item) => (
+                  {subPageItems.map((item) => (
                     <DataTableRow
                       key={item.id}
                       className={cn(
@@ -530,6 +534,8 @@ export function Subscriptions() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={items.length} page={subPage} onChange={setSubPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { AppContext } from "@/components/layout/AppShell";
@@ -25,6 +27,7 @@ type AccountOption = {
   bankName: string;
   accountName: string;
   accountNumber: string | null;
+  balance: number;
 };
 
 type CardItem = {
@@ -109,7 +112,8 @@ export function Cards() {
       cardType: card.cardType,
       accountId: card.accountId ? String(card.accountId) : "",
       cardNumber: card.cardNumber ?? "",
-      balance: String(card.balance),
+      // 체크카드 잔액은 계좌에서 자동 관리되므로 폼에 채우지 않음
+      balance: card.cardType === "credit" ? String(card.balance) : "",
       isShared: card.isShared,
       memo: card.memo ?? ""
     });
@@ -175,7 +179,19 @@ export function Cards() {
     }
   }
 
-  const totalBalance = cards.reduce((sum, c) => sum + c.balance, 0);
+  // 체크카드 표시 잔액: 연결 계좌 잔액 우선 사용
+  function cardDisplayBalance(card: CardItem): number {
+    if (card.cardType === "debit" && card.accountId) {
+      const linked = accounts.find((a) => a.id === card.accountId);
+      if (linked != null) return linked.balance;
+    }
+    return card.balance;
+  }
+
+  // 신용카드만 합산 (체크카드 잔액은 연결 계좌에서 표시됨)
+  const creditBalance = cards.filter((c) => c.cardType === "credit").reduce((sum, c) => sum + c.balance, 0);
+  const debitCount = cards.filter((c) => c.cardType === "debit").length;
+  const { page: cardPage, setPage: setCardPage, pageItems: cardPageItems } = usePagination(cards);
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
@@ -280,16 +296,22 @@ export function Cards() {
                 />
                 공용 카드 (가족·함께 쓰는 카드)
               </label>
-              <div className="grid gap-2">
-                <Label htmlFor="balance">카드 잔액</Label>
-                <Input
-                  id="balance"
-                  type="number"
-                  value={form.balance}
-                  onChange={(e) => updateField("balance", e.target.value)}
-                  placeholder="0"
-                />
-              </div>
+              {form.cardType === "credit" ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="balance">카드 잔액</Label>
+                  <Input
+                    id="balance"
+                    type="number"
+                    value={form.balance}
+                    onChange={(e) => updateField("balance", e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+              ) : (
+                <p className="rounded-lg border border-border/60 bg-secondary/40 px-3.5 py-2.5 text-xs text-muted-foreground">
+                  체크카드 잔액은 연결된 계좌의 잔액을 자동으로 표시합니다.
+                </p>
+              )}
               <div className="grid gap-2">
                 <Label htmlFor="memo">메모</Label>
                 <Input
@@ -317,7 +339,9 @@ export function Cards() {
           <CardHeader className="shrink-0 border-b border-border/60 px-5 py-4">
             <CardTitle className="text-base">등록된 카드</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
-              총 {cards.length}개{cards.length > 0 ? ` · 잔액 합계 ${won(totalBalance)}` : ""}
+              총 {cards.length}개
+              {debitCount > 0 ? ` · 체크 ${debitCount}개` : ""}
+              {creditBalance > 0 ? ` · 신용카드 잔액 ${won(creditBalance)}` : ""}
             </p>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col p-0">
@@ -326,6 +350,7 @@ export function Cards() {
                 등록된 카드가 없습니다. 왼쪽에서 추가해 보세요.
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -340,7 +365,7 @@ export function Cards() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {cards.map((card) => (
+                  {cardPageItems.map((card) => (
                     <DataTableRow
                       key={card.id}
                       className={cn(editingId === card.id && "bg-primary/10 hover:bg-primary/10")}
@@ -358,7 +383,14 @@ export function Cards() {
                           ? card.accountLabel || maskNumber(card.accountNumber)
                           : maskNumber(card.cardNumber)}
                       </DataTableCell>
-                      <DataTableCell className="tnum">{won(card.balance)}</DataTableCell>
+                      <DataTableCell className="tnum">
+                        <div>
+                          <div>{won(cardDisplayBalance(card))}</div>
+                          {card.cardType === "debit" && (
+                            <div className="text-[11px] text-muted-foreground">계좌 잔액</div>
+                          )}
+                        </div>
+                      </DataTableCell>
                       <DataTableCell className="max-w-[160px] truncate text-muted-foreground">
                         {card.memo || "-"}
                       </DataTableCell>
@@ -389,6 +421,8 @@ export function Cards() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={cards.length} page={cardPage} onChange={setCardPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

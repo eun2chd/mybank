@@ -20,6 +20,8 @@ import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/auth";
 import { formatMonthLabel, isCurrentMonth, shiftMonth, won } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type SharedCardOption = {
   id: number;
@@ -103,6 +105,7 @@ export function SharedCard() {
   const [memberName, setMemberName] = useState("");
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const { page: entryPage, setPage: setEntryPage, pageItems: entryPageItems } = usePagination(entries);
 
   const periodLabel = formatMonthLabel(viewYear, viewMonth);
   const canGoNext = !isCurrentMonth(viewYear, viewMonth);
@@ -473,6 +476,7 @@ export function SharedCard() {
                 {entries.length === 0 ? (
                   <p className="p-6 text-sm text-muted-foreground">등록된 내역이 없습니다.</p>
                 ) : (
+                  <>
                   <DataTable wrapperClassName="min-h-0 flex-1">
                     <DataTableHeader>
                       <DataTableRow>
@@ -486,7 +490,7 @@ export function SharedCard() {
                       </DataTableRow>
                     </DataTableHeader>
                     <DataTableBody>
-                      {entries.map((entry) => (
+                      {entryPageItems.map((entry) => (
                         <DataTableRow key={entry.id} className={cn(editingUsageId === entry.id && "bg-primary/10")}>
                           <DataTableCell className="tnum text-muted-foreground">{entry.usageDate.replace(/-/g, ".")}</DataTableCell>
                           <DataTableCell>{entry.memberName}</DataTableCell>
@@ -519,6 +523,8 @@ export function SharedCard() {
                       ))}
                     </DataTableBody>
                   </DataTable>
+                  <Pagination total={entries.length} page={entryPage} onChange={setEntryPage} className="shrink-0 border-t border-border/60" />
+                  </>
                 )}
               </CardContent>
             </Card>

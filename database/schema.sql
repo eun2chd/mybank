@@ -147,6 +147,8 @@ CREATE TABLE IF NOT EXISTS investments (
   total_quantity DECIMAL(20,8) DEFAULT 0,
   average_price DECIMAL(15,2) DEFAULT 0,
   current_price DECIMAL(15,2) DEFAULT 0,
+  currency VARCHAR(3) NOT NULL DEFAULT 'KRW',
+  original_price DECIMAL(20,6) DEFAULT NULL,
   memo TEXT,
   is_active BOOLEAN DEFAULT TRUE,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

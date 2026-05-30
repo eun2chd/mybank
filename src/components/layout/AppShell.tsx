@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import {
   ChartPie,
@@ -19,6 +20,8 @@ import type { AuthUser } from "@/auth";
 
 export type AppContext = {
   user: AuthUser;
+  refreshKey: number;
+  bumpRefreshKey: () => void;
 };
 
 type Props = {
@@ -35,6 +38,9 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   );
 
 export function AppShell({ user, onLogout }: Props) {
+  const [refreshKey, setRefreshKey] = useState(0);
+  function bumpRefreshKey() { setRefreshKey((k) => k + 1); }
+
   const initial = user.nickname.slice(0, 1);
   const email = user.email ?? `${user.nickname.toLowerCase()}@mybank.io`;
 
@@ -139,7 +145,7 @@ export function AppShell({ user, onLogout }: Props) {
       </aside>
 
       <main className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain px-5 py-5 sm:px-8 lg:px-8 lg:py-6 xl:px-10">
-        <Outlet context={{ user } satisfies AppContext} />
+        <Outlet context={{ user, refreshKey, bumpRefreshKey } satisfies AppContext} />
       </main>
     </div>
   );

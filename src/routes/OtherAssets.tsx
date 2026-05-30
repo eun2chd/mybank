@@ -19,6 +19,8 @@ import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/auth";
 import { won } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type AssetType = "deposit" | "loan" | "debt" | "other";
 
@@ -71,6 +73,7 @@ export function OtherAssets() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const { page: assetPage, setPage: setAssetPage, pageItems: assetPageItems } = usePagination(assets);
 
   async function load() {
     const rows = await apiFetch<OtherAssetItem[]>("/api/other-assets", user);
@@ -260,6 +263,7 @@ export function OtherAssets() {
                 등록된 기타 자산이 없습니다. 왼쪽에서 추가해 보세요.
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -272,7 +276,7 @@ export function OtherAssets() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {assets.map((item) => (
+                  {assetPageItems.map((item) => (
                     <DataTableRow
                       key={item.id}
                       className={cn(editingId === item.id && "bg-primary/10 hover:bg-primary/10")}
@@ -319,6 +323,8 @@ export function OtherAssets() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={assets.length} page={assetPage} onChange={setAssetPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

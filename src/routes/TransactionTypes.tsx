@@ -19,6 +19,8 @@ import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/auth";
 import { TRANSACTION_KIND_AGGREGATE } from "@/lib/transaction-summary";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type TypeKind = "expense" | "income" | "neutral";
 
@@ -62,6 +64,7 @@ export function TransactionTypes() {
   const [editingSystem, setEditingSystem] = useState(false);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const { page: typePage, setPage: setTypePage, pageItems: typePageItems } = usePagination(items);
 
   async function load() {
     const rows = await apiFetch<TransactionTypeItem[]>("/api/transaction-types", user);
@@ -232,6 +235,7 @@ export function TransactionTypes() {
                 등록된 유형이 없습니다.
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -244,7 +248,7 @@ export function TransactionTypes() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {items.map((item) => (
+                  {typePageItems.map((item) => (
                     <DataTableRow
                       key={item.id}
                       className={cn(editingId === item.id && "bg-primary/10 hover:bg-primary/10")}
@@ -299,6 +303,8 @@ export function TransactionTypes() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={items.length} page={typePage} onChange={setTypePage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

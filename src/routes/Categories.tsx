@@ -18,6 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiFetch } from "@/auth";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type CategoryType = "expense" | "income" | "investment" | "transfer" | "subscription";
 
@@ -72,6 +74,7 @@ export function Categories() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const { page: catPage, setPage: setCatPage, pageItems: catPageItems } = usePagination(categories);
 
   async function load() {
     const rows = await apiFetch<CategoryItem[]>("/api/categories", user);
@@ -256,6 +259,7 @@ export function Categories() {
                 등록된 카테고리가 없습니다. 왼쪽에서 추가해 보세요.
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -268,7 +272,7 @@ export function Categories() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {categories.map((item) => (
+                  {catPageItems.map((item) => (
                     <DataTableRow
                       key={item.id}
                       className={cn(editingId === item.id && "bg-primary/10 hover:bg-primary/10")}
@@ -315,6 +319,8 @@ export function Categories() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={categories.length} page={catPage} onChange={setCatPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

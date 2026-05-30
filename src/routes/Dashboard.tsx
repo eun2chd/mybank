@@ -43,6 +43,7 @@ type DashboardData = {
   accounts: Array<{ id: number; bankName: string; accountName: string; accountNumber: string; balance: number }>;
   holdings: Array<{
     id: number; name: string; symbol: string; market: string;
+    currency: string; originalPrice: number | null;
     buyAmount: number; totalQuantity: number; averagePrice: number;
     currentPrice: number; value: number; returnRate: number;
   }>;
@@ -50,6 +51,13 @@ type DashboardData = {
   incomeBreakdown: Array<{ name: string; amount: number }>;
   monthlyTrend: Array<{ label: string; value: number; display: string }>;
 };
+
+function formatForeignPrice(price: number, currency: string): string {
+  const symbols: Record<string, string> = { USD: "$", JPY: "¥", HKD: "HK$", GBP: "£" };
+  const sym = symbols[currency] ?? currency;
+  const decimals = currency === "JPY" ? 0 : 4;
+  return `${sym}${price.toLocaleString("en-US", { minimumFractionDigits: decimals > 0 ? 2 : 0, maximumFractionDigits: decimals })}`;
+}
 
 const BANK_TONES = ["#2F80ED", "#4D96FF", "#6BAAFF", "#89BEFF"];
 const CHART_PALETTE = ["#2F80ED", "#4D96FF", "#7FB4FF", "#A9CDFF"];
@@ -74,9 +82,10 @@ export function Dashboard() {
 
   const refreshHoldingPrices = useCallback(async () => {
     try {
-      const result = await apiFetch<{ updated: number; prices: Array<{ id: number; currentPrice: number }> }>(
-        "/api/investments/refresh-prices", user, { method: "POST" }
-      );
+      const result = await apiFetch<{
+        updated: number;
+        prices: Array<{ id: number; currentPrice: number; originalPrice: number | null; currency: string }>;
+      }>("/api/investments/refresh-prices", user, { method: "POST" });
       if (result.updated > 0) {
         setHoldings((prev) =>
           prev.map((h) => {
@@ -84,7 +93,14 @@ export function Dashboard() {
             if (!found) return h;
             const value = h.totalQuantity * found.currentPrice;
             const returnRate = h.buyAmount > 0 ? ((value - h.buyAmount) / h.buyAmount) * 100 : 0;
-            return { ...h, currentPrice: found.currentPrice, value, returnRate };
+            return {
+              ...h,
+              currentPrice: found.currentPrice,
+              originalPrice: found.originalPrice ?? h.originalPrice,
+              currency: found.currency ?? h.currency,
+              value,
+              returnRate
+            };
           })
         );
       }
@@ -535,9 +551,16 @@ function StockCard({ holdings, stockValue }: { holdings: DashboardData["holdings
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-1 pl-4 text-xs text-muted-foreground">
-                    <span>현재가 <strong className="text-foreground">{won(s.currentPrice)}</strong></span>
-                    <span>보유가 <strong className="text-foreground">{won(s.averagePrice)}</strong></span>
+                    <span>
+                      현재가{" "}
+                      <strong className="text-foreground">
+                        {s.currency !== "KRW" && s.originalPrice != null
+                          ? formatForeignPrice(s.originalPrice, s.currency)
+                          : won(s.currentPrice)}
+                      </strong>
+                    </span>
                     <span>평가액 <strong className="text-foreground">{won(s.value)}</strong></span>
+                    <span>매수가 <strong className="text-foreground">{won(s.buyAmount)}</strong></span>
                   </div>
                 </div>
               ))}

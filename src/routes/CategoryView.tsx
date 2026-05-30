@@ -23,6 +23,8 @@ import {
   computeTransactionNet
 } from "@/lib/transaction-summary";
 import { cn } from "@/lib/utils";
+import { Pagination } from "@/components/ui/pagination";
+import { usePagination } from "@/lib/pagination";
 
 type CategoryType = "expense" | "income" | "investment" | "transfer" | "subscription";
 
@@ -103,6 +105,7 @@ export function CategoryView() {
   const [loadingSummary, setLoadingSummary] = useState(true);
   const [loadingTx, setLoadingTx] = useState(false);
   const [message, setMessage] = useState("");
+  const { page: catViewPage, setPage: setCatViewPage, pageItems: catViewPageItems } = usePagination(transactions);
 
   const canGoNext = !isCurrentMonth(viewYear, viewMonth);
   const periodLabel = formatMonthLabel(viewYear, viewMonth);
@@ -449,6 +452,7 @@ export function CategoryView() {
                 </Link>
               </p>
             ) : (
+              <>
               <DataTable wrapperClassName="min-h-0 flex-1">
                 <DataTableHeader>
                   <DataTableRow>
@@ -460,7 +464,7 @@ export function CategoryView() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {transactions.map((tx) => (
+                  {catViewPageItems.map((tx) => (
                     <DataTableRow key={tx.id}>
                       <DataTableCell className="tnum text-muted-foreground">
                         {tx.transactionDate.replace(/-/g, ".")}
@@ -482,6 +486,8 @@ export function CategoryView() {
                   ))}
                 </DataTableBody>
               </DataTable>
+              <Pagination total={transactions.length} page={catViewPage} onChange={setCatViewPage} className="shrink-0 border-t border-border/60" />
+              </>
             )}
           </CardContent>
         </Card>

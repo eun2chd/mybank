@@ -20,7 +20,9 @@
     "db:migrate:subscriptions-image": "node scripts/migrate-subscriptions-image.js",
     "db:migrate:cards-account": "node scripts/migrate-cards-account-link.js",
     "db:migrate:transaction-types": "node scripts/migrate-transaction-types.js",
-    "db:migrate:shared-card": "node scripts/migrate-shared-card.js"
+    "db:migrate:shared-card": "node scripts/migrate-shared-card.js",
+    "db:migrate:card-usage-images": "node scripts/migrate-card-usage-images.js",
+    "db:migrate:card-usage-billing-date": "node scripts/migrate-card-usage-billing-date.js"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

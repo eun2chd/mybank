@@ -21,7 +21,7 @@ app.use(cors({
     cb(null, allowed.test(origin));
   }
 }));
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "15mb" }));
 app.use((req, _res, next) => {
   console.log(`[REQ] ${req.method} ${req.path} uid=${req.header("x-user-id") ?? "-"}`);
   next();
@@ -313,6 +313,7 @@ type CardUsagePayload = {
   cardId: number;
   cardMemberId: number;
   usageDate: string;
+  billingDate: string | null;
   paymentPlan: PaymentPlan;
   productName: string;
   productUrl: string | null;
@@ -320,6 +321,7 @@ type CardUsagePayload = {
   monthlyPayment: number;
   installmentMonths: number;
   memo: string | null;
+  images: string[] | null;
 };
 
 function parseCardMemberPayload(body: Record<string, unknown>, cardId: number): CardMemberPayload | { error: string } {
@@ -334,6 +336,8 @@ function parseCardUsagePayload(body: Record<string, unknown>): CardUsagePayload 
   const cardId = Number(body.cardId ?? body.card_id);
   const cardMemberId = Number(body.cardMemberId ?? body.card_member_id);
   const usageDate = String(body.usageDate ?? body.usage_date ?? "").trim();
+  const billingDateRaw = body.billingDate ?? body.billing_date;
+  const billingDate = billingDateRaw ? String(billingDateRaw).trim() || null : null;
   const rawPlan = String(body.paymentPlan ?? body.payment_plan ?? "lump_sum");
   const paymentPlan = (PAYMENT_PLANS.includes(rawPlan as PaymentPlan) ? rawPlan : "lump_sum") as PaymentPlan;
   const productName = String(body.productName ?? body.product_name ?? "").trim();
@@ -360,17 +364,26 @@ function parseCardUsagePayload(body: Record<string, unknown>): CardUsagePayload 
     }
   }
 
+  const imagesRaw = body.images;
+  const images = Array.isArray(imagesRaw)
+    ? (imagesRaw as unknown[])
+        .filter((img): img is string => typeof img === "string" && img.startsWith("data:image/"))
+        .slice(0, 10)
+    : null;
+
   return {
     cardId,
     cardMemberId,
     usageDate,
+    billingDate,
     paymentPlan,
     productName,
     productUrl,
     principalAmount,
     monthlyPayment,
     installmentMonths: paymentPlan === "lump_sum" ? 1 : installmentMonths,
-    memo
+    memo,
+    images: images && images.length > 0 ? images : null
   };
 }
 
@@ -385,19 +398,27 @@ function mapCardMemberRow(row: RowDataPacket) {
 }
 
 function mapCardUsageRow(row: RowDataPacket) {
+  let images: string[] = [];
+  try {
+    const raw = row.images;
+    if (raw) images = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch { /* empty */ }
+
   return {
     id: row.id,
     cardId: row.cardId ?? row.card_id,
     cardMemberId: row.cardMemberId ?? row.card_member_id,
     memberName: row.memberName ?? row.member_name,
     usageDate: formatDateValue(row.usage_date),
+    billingDate: row.billing_date ? formatDateValue(row.billing_date) : null,
     paymentPlan: row.paymentPlan ?? row.payment_plan,
     productName: row.productName ?? row.product_name,
     productUrl: row.productUrl ?? row.product_url ?? null,
     principalAmount: toNumber(row.principalAmount ?? row.principal_amount),
     monthlyPayment: toNumber(row.monthlyPayment ?? row.monthly_payment),
     installmentMonths: Number(row.installmentMonths ?? row.installment_months ?? 1),
-    memo: row.memo ?? ""
+    memo: row.memo ?? "",
+    images
   };
 }
 
@@ -1307,12 +1328,13 @@ app.get("/api/card-usage/summary", async (req, res) => {
 
   const [usageRows] = await db.execute<RowDataPacket[]>(
     `SELECT e.card_member_id AS cardMemberId,
-            COALESCE(SUM(e.principal_amount), 0) AS principalTotal,
-            COALESCE(SUM(e.monthly_payment), 0) AS monthlyTotal,
+            COALESCE(SUM(CASE WHEN e.payment_plan = 'lump_sum' THEN e.principal_amount ELSE 0 END), 0) AS lumpSumTotal,
+            COALESCE(SUM(CASE WHEN e.payment_plan = 'installment' THEN e.monthly_payment ELSE 0 END), 0) AS installmentTotal,
             COUNT(e.id) AS entryCount
      FROM card_usage_entries e
      WHERE e.user_id = :userId AND e.card_id = :cardId
-       AND e.usage_date >= :monthStart AND e.usage_date < :monthEndExclusive
+       AND COALESCE(e.billing_date, e.usage_date) >= :monthStart
+       AND COALESCE(e.billing_date, e.usage_date) < :monthEndExclusive
      GROUP BY e.card_member_id`,
     { userId, cardId, monthStart: monthRange.monthStart, monthEndExclusive: monthRange.monthEndExclusive }
   );
@@ -1320,20 +1342,21 @@ app.get("/api/card-usage/summary", async (req, res) => {
     usageRows.map((row) => [
       Number(row.cardMemberId),
       {
-        principalTotal: toNumber(row.principalTotal),
-        monthlyTotal: toNumber(row.monthlyTotal),
+        lumpSumTotal: toNumber(row.lumpSumTotal),
+        installmentTotal: toNumber(row.installmentTotal),
         entryCount: Number(row.entryCount ?? 0)
       }
     ])
   );
 
   const members = memberRows.map((row) => {
-    const stats = usageMap.get(Number(row.id)) ?? { principalTotal: 0, monthlyTotal: 0, entryCount: 0 };
+    const stats = usageMap.get(Number(row.id)) ?? { lumpSumTotal: 0, installmentTotal: 0, entryCount: 0 };
     return {
       id: row.id,
       name: row.name,
-      principalTotal: stats.principalTotal,
-      monthlyTotal: stats.monthlyTotal,
+      lumpSumTotal: stats.lumpSumTotal,
+      installmentTotal: stats.installmentTotal,
+      billingTotal: stats.lumpSumTotal + stats.installmentTotal,
       entryCount: stats.entryCount
     };
   });
@@ -1342,8 +1365,9 @@ app.get("/api/card-usage/summary", async (req, res) => {
     selectedYear: monthRange.year,
     selectedMonth: monthRange.month,
     members,
-    grandPrincipal: members.reduce((s, m) => s + m.principalTotal, 0),
-    grandMonthly: members.reduce((s, m) => s + m.monthlyTotal, 0)
+    grandLumpSum: members.reduce((s, m) => s + m.lumpSumTotal, 0),
+    grandInstallment: members.reduce((s, m) => s + m.installmentTotal, 0),
+    grandTotal: members.reduce((s, m) => s + m.billingTotal, 0)
   });
 });
 
@@ -1367,13 +1391,15 @@ app.get("/api/card-usage", async (req, res) => {
 
   const [rows] = await db.execute<RowDataPacket[]>(
     `SELECT e.id, e.card_id AS cardId, e.card_member_id AS cardMemberId, m.name AS memberName,
-            e.usage_date, e.payment_plan AS paymentPlan, e.product_name AS productName,
+            e.usage_date, e.billing_date, e.payment_plan AS paymentPlan, e.product_name AS productName,
             e.product_url AS productUrl, e.principal_amount AS principalAmount,
-            e.monthly_payment AS monthlyPayment, e.installment_months AS installmentMonths, e.memo
+            e.monthly_payment AS monthlyPayment, e.installment_months AS installmentMonths,
+            e.memo, e.images
      FROM card_usage_entries e
      JOIN card_members m ON m.id = e.card_member_id
      WHERE e.user_id = :userId AND e.card_id = :cardId
-       AND e.usage_date >= :monthStart AND e.usage_date < :monthEndExclusive
+       AND COALESCE(e.billing_date, e.usage_date) >= :monthStart
+       AND COALESCE(e.billing_date, e.usage_date) < :monthEndExclusive
      ORDER BY e.usage_date DESC, e.id DESC`,
     { userId, cardId, monthStart: monthRange.monthStart, monthEndExclusive: monthRange.monthEndExclusive }
   );
@@ -1404,12 +1430,12 @@ app.post("/api/card-usage", async (req, res) => {
 
   const [result] = await db.execute<ResultSetHeader>(
     `INSERT INTO card_usage_entries
-       (user_id, card_id, card_member_id, usage_date, payment_plan, product_name, product_url,
-        principal_amount, monthly_payment, installment_months, memo)
+       (user_id, card_id, card_member_id, usage_date, billing_date, payment_plan, product_name, product_url,
+        principal_amount, monthly_payment, installment_months, memo, images)
      VALUES
-       (:userId, :cardId, :cardMemberId, :usageDate, :paymentPlan, :productName, :productUrl,
-        :principalAmount, :monthlyPayment, :installmentMonths, :memo)`,
-    { userId, ...parsed }
+       (:userId, :cardId, :cardMemberId, :usageDate, :billingDate, :paymentPlan, :productName, :productUrl,
+        :principalAmount, :monthlyPayment, :installmentMonths, :memo, :images)`,
+    { userId, ...parsed, images: parsed.images ? JSON.stringify(parsed.images) : null }
   );
   res.status(201).json({ id: result.insertId });
 });
@@ -1436,15 +1462,17 @@ app.put("/api/card-usage/:id", async (req, res) => {
     `UPDATE card_usage_entries
      SET card_member_id = :cardMemberId,
          usage_date = :usageDate,
+         billing_date = :billingDate,
          payment_plan = :paymentPlan,
          product_name = :productName,
          product_url = :productUrl,
          principal_amount = :principalAmount,
          monthly_payment = :monthlyPayment,
          installment_months = :installmentMonths,
-         memo = :memo
+         memo = :memo,
+         images = :images
      WHERE id = :entryId AND user_id = :userId AND card_id = :cardId`,
-    { userId, entryId, ...parsed }
+    { userId, entryId, ...parsed, images: parsed.images ? JSON.stringify(parsed.images) : null }
   );
   if (result.affectedRows === 0) {
     res.status(404).json({ message: "내역을 찾을 수 없습니다." });
@@ -2779,7 +2807,10 @@ function mapCategoryKindTotals(row: RowDataPacket) {
 
 function formatDateValue(value: unknown) {
   if (value instanceof Date) {
-    return value.toISOString().slice(0, 10);
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, "0");
+    const d = String(value.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
   }
   return String(value ?? "").slice(0, 10);
 }

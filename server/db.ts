@@ -20,7 +20,8 @@ export function createPool() {
     charset: "utf8mb4",
     waitForConnections: true,
     connectionLimit: 8,
-    namedPlaceholders: true
+    namedPlaceholders: true,
+    dateStrings: true
   });
 }
 
